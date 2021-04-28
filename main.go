@@ -10,6 +10,13 @@ import (
 )
 
 func main(){
+
+	// 初始化下载器池
+
+
+
+
+
 	file, err := os.Open("./tmp")
 	if err != nil {
 		panic(err)
