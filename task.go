@@ -22,6 +22,7 @@ func NewTask(url string, file *os.File, size int64) (*Task, error) {
 		fmt.Println(rsp)
 		fmt.Println(rsp.Header.Get("Content-Length"))
 		fmt.Println(rsp.Header.Get("Accept-Ranges"))
+		fmt.Println(rsp.TransferEncoding)
 
 		size = rsp.ContentLength
 	}

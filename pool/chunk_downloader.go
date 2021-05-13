@@ -8,92 +8,148 @@ package pool
 
 import (
 	"io"
+	"log"
 	"net/http"
-	"os"
 	"strconv"
+
+	"github.com/azd1997/ego/edatabase"
+)
+
+const (
+	DefaultCacheSize = 4096	// Byte	与task中的需对应起来
 )
 
 // Chunk 数据块
 type Chunk struct {
-	Begin int64 `json:"begin"`	// Begin/End是HTTP分块传输的RANGE范围，单位是Byte
-	End int64 `json:"end"`
+	Begin int64 	// Begin/End是HTTP分块传输的RANGE范围，单位是Byte
+	End int64
 
-	Url string
-	File *os.File
+	Url    string
+	DbPath string
+
+	DataKey string
+	TaskKey string
+
+	tried int	// 已尝试多少次
+}
+
+func (c *Chunk) Valid() bool {
+	return true
+}
+
+func NewChunkDownloader(id int, tryAgain chan <- *Chunk) *ChunkDownloader {
+	return &ChunkDownloader{
+		id:        id,
+		status:    StatusIdle,
+		client:    &http.Client{},
+		tryAgain: tryAgain,
+		cacheSize: DefaultCacheSize,
+	}
 }
 
 // ChunkDownloader 块下载器
 type ChunkDownloader struct {
+	id int
+	status Status
 	client *http.Client
 
+	tryAgain chan <- *Chunk	// 下载时遇到错误，就把下载任务（chunk）塞回,tryAgain就是cdp.chunkQueue
+	cacheSize int			// 缓冲区大小，Byte
 }
 
+// Download 下载开始时状态变为busy，下载结束时变idle
+func (cd *ChunkDownloader) Download(chunk *Chunk) error {
 
+	var (
+		req *http.Request
+		rsp *http.Response
+		err error
+		buf []byte
+		db edatabase.Database
+		n int
+		needSize int64
+	)
 
-func (cd *ChunkDownloader) Download() {
-	request, err := http.NewRequest("GET", t.Url, nil)
+	if chunk.tried > 10 {
+		log.Fatalf(		// 程序退出
+			"The (%d)th ChunkDownloader met error when download chunk. chunk={%d-%d,%s,%s}, err=%s\n",
+			cd.id, chunk.Begin, chunk.End, chunk.Url, chunk.DbPath, "fail too much times")
+	}
+
+	req, err = http.NewRequest("GET", chunk.Url, nil)
 	if err != nil {
-		return err
+		goto ERR
 	}
-	begin := t.BlockList[id].Begin
-	end := t.BlockList[id].End
-	if end != -1 {	// end=-1则直接整个文件下载，不分块
-		// 请求头中设置块下载的起止范围
-		request.Header.Set(
-			"Range",
-			"bytes="+strconv.FormatInt(begin, 10)+"-"+strconv.FormatInt(end, 10),
-		)
-	}
+
+	// 请求头中设置块下载的起止范围
+	req.Header.Set(
+		"Range",
+		"bytes="+strconv.FormatInt(chunk.Begin, 10)+"-"+strconv.FormatInt(chunk.End, 10),
+	)
 
 	// 请求数据
-	resp, err := http.DefaultClient.Do(request)
+	rsp, err = cd.client.Do(req)
 	if err != nil {
-		return err
+		goto ERR
 	}
-	defer resp.Body.Close()
+	defer rsp.Body.Close()
 
-	var buf = make([]byte, t.CacheSize)
-	for {
-		if t.paused == true {
-			// 下载暂停
-			return nil
-		}
+	buf = make([]byte, cd.cacheSize)
+	n, err = rsp.Body.Read(buf)
+	// 检查下载的大小是否超出需要下载的大小
+	// 这里End+1是因为http的Range的end是包括在需要下载的数据内的
+	// 比如 0-1 的长度其实是2，所以这里end需要+1
+	needSize = chunk.End + 1 - chunk.Begin
+	if int64(n) > needSize {
+		// 数据大小不正常
+		// 一般是因为网络环境不好导致
+		// 比如用中国电信下载国外文件
 
-		n, e := resp.Body.Read(buf)
+		// 设置数据大小来去掉多余数据
+		// 并结束这个线程的下载
+		n = int(needSize)
+		err = io.EOF
+	}
+	if err != nil && err != io.EOF {
+		goto ERR
+	}
 
-		bufSize := int64(len(buf[:n]))
-		if end != -1 {
-			// 检查下载的大小是否超出需要下载的大小
-			// 这里End+1是因为http的Range的end是包括在需要下载的数据内的
-			// 比如 0-1 的长度其实是2，所以这里end需要+1
-			needSize := t.BlockList[id].End + 1 - t.BlockList[id].Begin
-			if bufSize > needSize {
-				// 数据大小不正常
-				// 一般是因为网络环境不好导致
-				// 比如用中国电信下载国外文件
-
-				// 设置数据大小来去掉多余数据
-				// 并结束这个线程的下载
-				bufSize = needSize
-				n = int(needSize)
-				e = io.EOF
-			}
-		}
-		// 将缓冲数据写入硬盘
-		t.File.WriteAt(buf[:n], t.BlockList[id].Begin)
-
-		// 更新已下载大小
-		t.status.Downloaded += bufSize
-		t.BlockList[id].Begin += bufSize
-
-		if e != nil {
-			if e == io.EOF {
-				// 数据已经下载完毕
-				return nil
-			}
-			return e
-		}
+	// 将该分块数据写入数据库
+	db, err = edatabase.OpenDatabase("badger", chunk.DbPath)
+	if err != nil {
+		goto ERR
+	}
+	defer db.Close()
+	err = db.Set([]byte(chunk.DataKey), buf)
+	if err != nil {
+		goto ERR
+	}
+	// 确认写入成功后，将对应的任务删除
+	err = db.Delete([]byte(chunk.TaskKey))
+	if err != nil {
+		goto ERR
 	}
 
 	return nil
+
+ERR:
+	log.Printf(
+		"The (%d)th ChunkDownloader met error when download chunk. chunk={%d-%d,%s,%s}, err=%s\n",
+		cd.id, chunk.Begin, chunk.End, chunk.Url, chunk.DbPath, err)
+
+	chunk.tried++
+	return nil
 }
+
+
+
+////////////////////////////////////////
+
+// Status 下载器状态
+type Status uint8
+
+const (
+	StatusIdle Status = iota
+	StatusBusy
+	// 其他(暂停等)?
+)
