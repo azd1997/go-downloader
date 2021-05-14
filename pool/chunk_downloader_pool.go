@@ -33,6 +33,7 @@ func Init(max int) error {
 		curHighest: -1,	// 表示没有可用的
 		idHeap: InitRankHeap(),
 		chunkQueue: make(chan *Chunk, 100),
+		stop: make(chan struct{}),
 	}
 	notifies = map[string]chan<- struct{}{}
 	return nil
@@ -58,6 +59,10 @@ func RegisterNotify(task string, notify chan <- struct{}) {
 	notifies[task] = notify
 }
 
+func RemoveNotify(task string) {
+	delete(notifies, task)
+}
+
 // ChunkDownloaderPool 下载器池
 // 不管程序中有多少块下载任务，调用CDP的下载方法
 type ChunkDownloaderPool struct {
@@ -71,7 +76,7 @@ type ChunkDownloaderPool struct {
 
 	chunkQueue chan *Chunk	// 下载任务队列
 
-	done chan struct{}
+	stop chan struct{}	// 如果没有初始化stop，对nil stop的写操作将阻塞
 }
 
 // DownloadChunk 外部调用，将块下载任务添加到
@@ -88,7 +93,7 @@ func (cdp *ChunkDownloaderPool) Start() {
 			select {
 			case chunk := <- cdp.chunkQueue:
 				go cdp.download(chunk)
-			case <- cdp.done:
+			case <- cdp.stop:
 				return
 			}
 		}
@@ -117,11 +122,16 @@ func (cdp *ChunkDownloaderPool) download(chunk *Chunk) {
 		log.Fatalln("ChunkDownloaderPool.download fail: ", err)
 	}
 	// 下载成功后通知Task
-	notifies[chunk.Url] <- struct{}{}
+	if notify, ok := notifies[chunk.Url]; ok && notify != nil {
+		notify <- struct{}{}
+	}
 
 	///////////////// 归还下载器 ////////////////////
 
 	cdp.retChunkDownloader(cd, cdr)
+
+	log.Printf("ChunkDownloaderPool.download succ: chunk={%d-%d,%s}\n",
+		chunk.Begin, chunk.End, chunk.Url)
 }
 
 // 获取下载器时，要将idle下载器转变为busy
@@ -186,7 +196,7 @@ func (cdp *ChunkDownloaderPool) retChunkDownloader(cd *ChunkDownloader, cdr *chu
 
 // Stop 关闭调度循环，清除所有结构
 func (cdp *ChunkDownloaderPool) Stop() {
-	cdp.done <- struct {}{}
+	cdp.stop <- struct{}{}
 	log.Println("ChunkDownloaderPool.Stop")
 }
 
@@ -205,6 +215,8 @@ type RankHeap struct {
 	sync.Mutex
 }
 
+// Heapify 重新堆化
+// 不使用heap.Fix(i)的原因是，没有记录元素的下标
 func (rh *RankHeap) Heapify() {
 	rh.Lock()
 	heap.Init(&rh.rankHeap)
@@ -242,7 +254,7 @@ type rankHeap []*chunkDownloaderRank
 
 func (h rankHeap) Len() int           { return len(h) }
 func (h rankHeap) Less(i, j int) bool {
-	if h[i].status == h[i].status {
+	if h[i].status == h[j].status {
 		return h[i].chunkDownloaderId < h[j].chunkDownloaderId
 	}
 	return h[i].status < h[j].status

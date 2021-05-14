@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -13,8 +14,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/azd1997/blockchair_downloader/edb"
 	"github.com/azd1997/blockchair_downloader/pool"
-	"github.com/azd1997/ego/edatabase"
 	"github.com/azd1997/ego/utils"
 )
 
@@ -26,6 +27,8 @@ const (
 	DataKeyPrefix = 'D'
 	NumKeyPrefix = 'N'
 	PlaceHolder = '-'
+
+	DownloadDir = "./download/"
 )
 
 // Task 任务
@@ -53,10 +56,10 @@ type Task struct {
 	// 任务键格式：T|[start][end]
 	// 数量键：N
 	DbPath string `json:"db_path"`
-	//db edatabase.Database
+	db edb.DB	// 数据库连接实例
 
 	notify chan struct{}	// 用于向pool注册，当该Task所有分块下载完成后通知该Task
-	done chan struct{} // 该任务结束
+	close chan struct{} // 该任务结束
 }
 
 //func (t *Task) DecrChunkLeft() {
@@ -76,7 +79,7 @@ func NewTask(url string) (*Task, error) {
 		ChunkSize: DefaultChunkSize,
 		StartTime: time.Now(),
 		notify: make(chan struct{}),
-		done: make(chan struct{}),
+		close: make(chan struct{}),
 	}
 	//fmt.Println("hex(md5(url)) = ", task.UrlHash)
 
@@ -105,6 +108,14 @@ func NewTask(url string) (*Task, error) {
 		}
 	}
 
+	// 检查下载目录是否存在
+	if exists, _ := utils.DirExists(DownloadDir); !exists {
+		err = os.MkdirAll(DownloadDir, 0777)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	// 文件名 确定下载的唯一文件名，避免文件名重复
 	strs := strings.Split(url, "/")
 	fileName := strs[len(strs)-1]
@@ -115,19 +126,33 @@ func NewTask(url string) (*Task, error) {
 	if exist, err := utils.FileExists(fileName); exist || err != nil {
 		fileName = fileName + "-" + strconv.Itoa(int(time.Now().Unix()))
 	}
+	fileName = DownloadDir + fileName
 	task.FileName = fileName
 	//fmt.Println("task.fileName = ", task.FileName)
 
 	if task.ChunkSupported {
 		// 如果本地已经有对应数据库，说明是续传；否则根据fileSize分块，并写入数据库
-		dbPath := "./" + fileName + ".DOWNLOADING"
+		dbPath := fileName + ".DOWNLOADING"
 		task.DbPath = dbPath
 		//fmt.Println("task.dbPath = ", task.FileName)
 		// 打开数据库（如果没有就创建）
-		if edatabase.DbExists("badger", dbPath) {
+		if edb.DbExists(dbPath) {
 			task.Resume = true
 		}
+
+		// 创建数据库连接实例，直到任务结束或程序停止才关闭
+		db, err := edb.OpenEDB(task.DbPath)
+		if err != nil {
+			return nil, err
+		}
+		task.db = db
 	}
+
+	// 打印信息
+	fmt.Println()
+	fmt.Println("==================== Task Info ====================")
+	fmt.Println(utils.JsonMarshalIndentToString(task))
+	fmt.Println()
 
 	return task, nil
 }
@@ -146,7 +171,7 @@ func (t *Task) downloadDirectly() error {
 	if err != nil {
 		return err
 	}
-	f, err := os.Create("./" + t.FileName)
+	f, err := os.Create(t.FileName)
 	if err != nil {
 		return err
 	}
@@ -156,21 +181,17 @@ func (t *Task) downloadDirectly() error {
 
 // 分块下载
 func (t *Task) downloadChunkly() error {
+	if t.db == nil {
+		return errors.New("nil db instance")
+	}
 
 	// 向cdp注册一个通知通道
 	pool.RegisterNotify(t.Url, t.notify)
 
-	// 打开数据库
-	db, err := edatabase.OpenDatabase("badger", t.DbPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-
 	// 读取或添加所有分块任务
-
+	chunks := make([]*pool.Chunk, 0)
 	if t.Resume {
-		db.IterKey(func(k []byte) error {	// 符合条件的k就是任务 注意k最好拷贝后使用
+		t.db.IterKey(func(k []byte) error {	// 符合条件的k就是任务 注意k最好拷贝后使用
 			if len(k) == 0 {
 				return errors.New("nil key")
 			}
@@ -191,11 +212,11 @@ func (t *Task) downloadChunkly() error {
 				dk := []byte(dkstr)
 				dk[0] = DataKeyPrefix
 				dkstr = string(dk)
-				pool.Download(pool.Chunk{
+				chunks = append(chunks, &pool.Chunk{
 					Begin:  begin,
 					End:    end,
 					Url:    t.Url,
-					DbPath: t.DbPath,
+					Db: t.db,
 					TaskKey: string(k),
 					DataKey: dkstr,
 				})
@@ -205,7 +226,7 @@ func (t *Task) downloadChunkly() error {
 	} else {
 		t.ChunkLeft = t.ChunkNum	// 设置还剩下的任务数
 		// 初次下载，需要划分任务
-		for i:=int64(1); i<t.ChunkNum; i++ {
+		for i:=int64(1); i<=t.ChunkNum; i++ {
 			// 计算begin,end
 			begin := (i-1) * t.ChunkSize
 			end := begin + t.ChunkSize - 1
@@ -217,7 +238,7 @@ func (t *Task) downloadChunkly() error {
 			key[0] = TaskKeyPrefix
 			binary.PutVarint(key[1:9], begin)
 			binary.PutVarint(key[9:17], end)
-			if err := db.Set(key, []byte{PlaceHolder}); err != nil {
+			if err := t.db.Set(key, []byte{PlaceHolder}); err != nil {
 				return err
 			}
 			// 将分块任务发给cdp
@@ -225,16 +246,28 @@ func (t *Task) downloadChunkly() error {
 			dk := []byte(dkstr)
 			dk[0] = DataKeyPrefix
 			dkstr = string(dk)
-			pool.Download(pool.Chunk{
+			chunks = append(chunks, &pool.Chunk{
 				Begin:  begin,
 				End:    end,
 				Url:    t.Url,
-				DbPath: t.DbPath,
+				Db: t.db,
 				TaskKey: string(key),
 				DataKey: dkstr,
 			})
 		}
 	}
+
+	if len(chunks) == 0 {
+		t.db.Close()
+		log.Println("no chunks need to download")
+		return nil
+	}
+
+	// 下载 注意pool.Download()也涉及数据库，所以必需先关闭上面的数据库，再调用Download
+	for i:=0; i<len(chunks); i++ {
+		pool.Download(*(chunks[i]))
+	}
+
 
 	// 得到数据库中的分块任务（无论是续传还是初传），这些任务需要传给下载器池cdp
 	// cdp下载分块完成后将数据库中任务删除，内容写入
@@ -248,12 +281,60 @@ func (t *Task) downloadChunkly() error {
 			log.Printf("Task(%s): downloaded (%d/%d) elapsed %s\n",
 				t.Url, (t.ChunkNum - t.ChunkLeft), t.ChunkNum, time.Now().Sub(t.StartTime).String())
 			if t.ChunkLeft == 0 {
+				pool.RemoveNotify(t.Url)
+				err := t.mergeChunksToFile()	// 合并文件
+				if err != nil {
+					return err
+				}
+				// 关闭数据库
+				t.db.Close()
 				return nil
 			}
-		case <-t.done:
+		case <-t.close:
 			log.Printf("Task(%s): downloaded (%d/%d) elapsed %s. quit unexpectly\n",
 				t.Url, (t.ChunkNum - t.ChunkLeft), t.ChunkNum, time.Now().Sub(t.StartTime).String())
+			// 关闭数据库
+			t.db.Close()
 			return nil
 		}
 	}
+}
+
+func (t *Task) mergeChunksToFile() error {
+	// 创建文件
+	f, err := os.Create(t.FileName)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// 拼接所有分块
+	for i:=int64(1); i<=t.ChunkNum; i++ {
+		// 计算begin,end
+		begin := (i - 1) * t.ChunkSize
+		end := begin + t.ChunkSize - 1
+		if end > t.FileSize-1 {
+			end = t.FileSize - 1
+		}
+		// 构建key
+		key := make([]byte, KeyLength)
+		key[0] = DataKeyPrefix
+		binary.PutVarint(key[1:9], begin)
+		binary.PutVarint(key[9:17], end)
+		// 查询对应数据
+		v, err := t.db.Get(key)
+		if err != nil {
+			return err
+		}
+		// 写入文件
+		_, err = f.WriteAt(v, begin)
+		if err != nil {
+			return err
+		}
+	}
+
+	// 打印文件信息
+	stat, _ := f.Stat()
+	fmt.Printf("文件大小：%d byte\n", stat.Size())
+	return nil
 }

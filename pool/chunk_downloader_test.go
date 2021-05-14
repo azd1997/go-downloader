@@ -1,55 +1,55 @@
 package pool
 
 import (
-	"net/http"
+	"fmt"
 	"testing"
+
+	"github.com/azd1997/blockchair_downloader/edb"
 )
 
 func TestChunkDownloader_Download(t *testing.T) {
-	
+
+	// 准备好数据库
+	dbPath := "./tmp.DOWNLOADING"
+	db, err := edb.OpenEDB(dbPath)
+	if err != nil {
+		panic(err)
+	}
+	defer db.Close()	// 记得关闭
+	dk, tk := "datakey", "taskkey"
+	err = db.Set([]byte(tk), []byte("-"))
+	if err != nil {
+		panic(err)
+	}
+
+
+	// 块下载
 	tryagain := make(chan *Chunk, 10)
 	cd := NewChunkDownloader(1, tryagain)
 	
 	chunk := &Chunk{
 		Begin:   0,
 		End:     10000,
-		Url:     "",
-		DbPath:  "",
-		DataKey: "",
-		TaskKey: "",
+		Url:     "https://gz.blockchair.com/bitcoin/inputs/blockchair_bitcoin_inputs_20130425.tsv.gz",
+		Db:  db,
+		DataKey: dk,
+		TaskKey: tk,
 		tried:   0,
 	}
 	
-	type fields struct {
-		id        int
-		status    Status
-		client    *http.Client
-		tryAgain  chan<- *Chunk
-		cacheSize int
+	err = cd.Download(chunk)
+	if err != nil {
+		panic(err)
 	}
-	type args struct {
-		chunk *Chunk
+
+	// 检查下载是否成功
+	v, err := db.Get([]byte(dk))
+	if err != nil {
+		panic(err)
 	}
-	tests := []struct {
-		name    string
-		fields  fields
-		args    args
-		wantErr bool
-	}{
-		// TODO: Add test cases.
+	if len(v) != int(chunk.End + 1 - chunk.Begin) {
+		panic("errrrr")
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cd := &ChunkDownloader{
-				id:        tt.fields.id,
-				status:    tt.fields.status,
-				client:    tt.fields.client,
-				tryAgain:  tt.fields.tryAgain,
-				cacheSize: tt.fields.cacheSize,
-			}
-			if err := cd.Download(tt.args.chunk); (err != nil) != tt.wantErr {
-				t.Errorf("Download() error = %v, wantErr %v", err, tt.wantErr)
-			}
-		})
-	}
+
+	fmt.Println("success")
 }

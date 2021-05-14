@@ -1,3 +1,5 @@
 tmp
 .idea
 go.sum
+*.DOWNLOADING
+*/download/

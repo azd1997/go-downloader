@@ -7,12 +7,11 @@
 package pool
 
 import (
+	"github.com/azd1997/blockchair_downloader/edb"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
-
-	"github.com/azd1997/ego/edatabase"
 )
 
 const (
@@ -25,7 +24,8 @@ type Chunk struct {
 	End int64
 
 	Url    string
-	DbPath string
+	//DbPath string
+	Db edb.DB
 
 	DataKey string
 	TaskKey string
@@ -34,6 +34,9 @@ type Chunk struct {
 }
 
 func (c *Chunk) Valid() bool {
+	if c.Db == nil {
+		return false
+	}
 	return true
 }
 
@@ -43,7 +46,7 @@ func NewChunkDownloader(id int, tryAgain chan <- *Chunk) *ChunkDownloader {
 		status:    StatusIdle,
 		client:    &http.Client{},
 		tryAgain: tryAgain,
-		cacheSize: DefaultCacheSize,
+		//cacheSize: DefaultCacheSize,
 	}
 }
 
@@ -54,7 +57,7 @@ type ChunkDownloader struct {
 	client *http.Client
 
 	tryAgain chan <- *Chunk	// 下载时遇到错误，就把下载任务（chunk）塞回,tryAgain就是cdp.chunkQueue
-	cacheSize int			// 缓冲区大小，Byte
+	//cacheSize int			// 缓冲区大小，Byte
 }
 
 // Download 下载开始时状态变为busy，下载结束时变idle
@@ -65,15 +68,14 @@ func (cd *ChunkDownloader) Download(chunk *Chunk) error {
 		rsp *http.Response
 		err error
 		buf []byte
-		db edatabase.Database
 		n int
 		needSize int64
 	)
 
 	if chunk.tried > 10 {
 		log.Fatalf(		// 程序退出
-			"The (%d)th ChunkDownloader met error when download chunk. chunk={%d-%d,%s,%s}, err=%s\n",
-			cd.id, chunk.Begin, chunk.End, chunk.Url, chunk.DbPath, "fail too much times")
+			"The (%d)th ChunkDownloader met error when download chunk. chunk={%d-%d,%s}, err=%s\n",
+			cd.id, chunk.Begin, chunk.End, chunk.Url, "fail too much times")
 	}
 
 	req, err = http.NewRequest("GET", chunk.Url, nil)
@@ -94,7 +96,7 @@ func (cd *ChunkDownloader) Download(chunk *Chunk) error {
 	}
 	defer rsp.Body.Close()
 
-	buf = make([]byte, cd.cacheSize)
+	buf = make([]byte, chunk.End - chunk.Begin + 1)
 	n, err = rsp.Body.Read(buf)
 	// 检查下载的大小是否超出需要下载的大小
 	// 这里End+1是因为http的Range的end是包括在需要下载的数据内的
@@ -115,17 +117,12 @@ func (cd *ChunkDownloader) Download(chunk *Chunk) error {
 	}
 
 	// 将该分块数据写入数据库
-	db, err = edatabase.OpenDatabase("badger", chunk.DbPath)
-	if err != nil {
-		goto ERR
-	}
-	defer db.Close()
-	err = db.Set([]byte(chunk.DataKey), buf)
+	err = chunk.Db.Set([]byte(chunk.DataKey), buf)
 	if err != nil {
 		goto ERR
 	}
 	// 确认写入成功后，将对应的任务删除
-	err = db.Delete([]byte(chunk.TaskKey))
+	err = chunk.Db.Delete([]byte(chunk.TaskKey))
 	if err != nil {
 		goto ERR
 	}
@@ -134,8 +131,8 @@ func (cd *ChunkDownloader) Download(chunk *Chunk) error {
 
 ERR:
 	log.Printf(
-		"The (%d)th ChunkDownloader met error when download chunk. chunk={%d-%d,%s,%s}, err=%s\n",
-		cd.id, chunk.Begin, chunk.End, chunk.Url, chunk.DbPath, err)
+		"The (%d)th ChunkDownloader met error when download chunk. chunk={%d-%d,%s}, err=%s\n",
+		cd.id, chunk.Begin, chunk.End, chunk.Url, err)
 
 	chunk.tried++
 	return nil
