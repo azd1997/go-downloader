@@ -1,3 +1,4 @@
+// 这里是一个比较简单的并发下载器的实现
 package main
 
 import (
@@ -10,12 +11,6 @@ import (
 )
 
 func main(){
-
-	// 初始化下载器池
-
-
-
-
 
 	file, err := os.Open("./tmp")
 	if err != nil {

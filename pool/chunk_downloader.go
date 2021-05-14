@@ -7,11 +7,13 @@
 package pool
 
 import (
+	"fmt"
 	"github.com/azd1997/blockchair_downloader/edb"
 	"io"
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -95,6 +97,13 @@ func (cd *ChunkDownloader) Download(chunk *Chunk) error {
 		goto ERR
 	}
 	defer rsp.Body.Close()
+	fmt.Println("rsp.Header: ", rsp.Header)
+
+	// 检查Content-Range是否匹配
+	if !checkContentRange(chunk, rsp) {
+		log.Println("Content-Range mismatched")
+		goto ERR
+	}
 
 	buf = make([]byte, chunk.End - chunk.Begin + 1)
 	n, err = rsp.Body.Read(buf)
@@ -136,6 +145,31 @@ ERR:
 
 	chunk.tried++
 	return nil
+}
+
+func checkContentRange(chunk *Chunk, rsp *http.Response) bool {
+	// 如果“Content-Range:[bytes 0-4095/91615]”存在，检查是否与请求的匹配
+	cr := rsp.Header.Get("Content-Range")
+	if cr != "" {
+		strs1 := strings.Split(cr, " ")
+		if len(strs1) != 2 {return false}
+		str1 := strs1[1] // 取得“0-4095/91615]”
+		strs2 := strings.Split(str1, "/")
+		if len(strs2) != 2 {return false}
+		str2 := strs2[0] // 取得“0-4095”
+		strs3 := strings.Split(str2, "-")
+		if len(strs3) != 2 {return false}
+		str4, str5 := strs3[0], strs3[1]
+		begin, err := strconv.Atoi(str4)
+		if err != nil {return false}
+		end, err := strconv.Atoi(str5)
+		if err != nil {return false}
+		if int64(begin) != chunk.Begin || int64(end) != chunk.End {
+			return false
+		}
+	}
+
+	return true
 }
 
 

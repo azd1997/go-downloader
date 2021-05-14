@@ -29,8 +29,8 @@ func TestChunkDownloader_Download(t *testing.T) {
 	
 	chunk := &Chunk{
 		Begin:   0,
-		End:     10000,
-		Url:     "https://gz.blockchair.com/bitcoin/inputs/blockchair_bitcoin_inputs_20130425.tsv.gz",
+		End:     4095,
+		Url:     "https://gz.blockchair.com/bitcoin/inputs/blockchair_bitcoin_inputs_20100404.tsv.gz",
 		Db:  db,
 		DataKey: dk,
 		TaskKey: tk,

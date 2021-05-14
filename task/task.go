@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	DefaultChunkSize = 4096
+	DefaultChunkSize = 20 * 1024
 
 	KeyLength = 17 // 1+8+8
 	TaskKeyPrefix = 'T'
@@ -263,7 +263,7 @@ func (t *Task) downloadChunkly() error {
 		return nil
 	}
 
-	// 下载 注意pool.Download()也涉及数据库，所以必需先关闭上面的数据库，再调用Download
+	// 下载
 	for i:=0; i<len(chunks); i++ {
 		pool.Download(*(chunks[i]))
 	}
@@ -301,6 +301,45 @@ func (t *Task) downloadChunkly() error {
 }
 
 func (t *Task) mergeChunksToFile() error {
+	// 创建文件
+	f, err := os.Create(t.FileName)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	// 拼接所有分块
+	for i:=int64(1); i<=t.ChunkNum; i++ {
+		// 计算begin,end
+		begin := (i - 1) * t.ChunkSize
+		end := begin + t.ChunkSize - 1
+		if end > t.FileSize-1 {
+			end = t.FileSize - 1
+		}
+		// 构建key
+		key := make([]byte, KeyLength)
+		key[0] = DataKeyPrefix
+		binary.PutVarint(key[1:9], begin)
+		binary.PutVarint(key[9:17], end)
+		// 查询对应数据
+		v, err := t.db.Get(key)
+		if err != nil {
+			return err
+		}
+		// 写入文件
+		_, err = f.WriteAt(v, begin)
+		if err != nil {
+			return err
+		}
+	}
+
+	// 打印文件信息
+	stat, _ := f.Stat()
+	fmt.Printf("文件大小：%d byte\n", stat.Size())
+	return nil
+}
+
+func (t *Task) mergeChunksToFile2() error {
 	// 创建文件
 	f, err := os.Create(t.FileName)
 	if err != nil {

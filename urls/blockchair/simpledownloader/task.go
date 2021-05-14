@@ -61,7 +61,7 @@ type Task struct {
 	MaxThread int // 最大的并发数
 	CacheSize int64 // 缓冲区大小
 
-	BlockList []Block	// 文件分块（任务）
+	BlockList []Block // 文件分块（任务）
 
 	onStart  func()
 	onPause  func()
@@ -70,9 +70,9 @@ type Task struct {
 	onFinish func()
 	onError  func(int, error)
 
-	paused bool
+	paused    bool
 	completed bool
-	status Status
+	status    Status
 }
 
 func (t *Task) Start() {
