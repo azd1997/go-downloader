@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	DefaultChunkSize = 20 * 1024
+	DefaultChunkSize = 4096
 
 	KeyLength = 17 // 1+8+8
 	TaskKeyPrefix = 'T'

@@ -8,12 +8,13 @@ package pool
 
 import (
 	"fmt"
-	"github.com/azd1997/blockchair_downloader/edb"
-	"io"
+	"io/ioutil"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+
+	"github.com/azd1997/blockchair_downloader/edb"
 )
 
 const (
@@ -70,7 +71,7 @@ func (cd *ChunkDownloader) Download(chunk *Chunk) error {
 		rsp *http.Response
 		err error
 		buf []byte
-		n int
+		//n int
 		needSize int64
 	)
 
@@ -105,25 +106,38 @@ func (cd *ChunkDownloader) Download(chunk *Chunk) error {
 		goto ERR
 	}
 
-	buf = make([]byte, chunk.End - chunk.Begin + 1)
-	n, err = rsp.Body.Read(buf)
+	// buf = make([]byte, chunk.End - chunk.Begin + 1)
+	// read一次不一定能读取全部数据
+	// 别人不一定一下子给你发4k的数据，完全有可能发2次2k，第一次发的时候，你的read就返回了，这个时候就只有2k的数据
+	//n, err = rsp.Body.Read(buf)
+	// 要一次读完全部数据，可以用ioutil.ReadAll
+	buf, err = ioutil.ReadAll(rsp.Body)
+	if err != nil {
+		goto ERR
+	}
+	needSize = chunk.End + 1 - chunk.Begin
+	if int64(len(buf)) > needSize {
+		buf = buf[:needSize]
+	}
+
 	// 检查下载的大小是否超出需要下载的大小
 	// 这里End+1是因为http的Range的end是包括在需要下载的数据内的
 	// 比如 0-1 的长度其实是2，所以这里end需要+1
-	needSize = chunk.End + 1 - chunk.Begin
-	if int64(n) > needSize {
-		// 数据大小不正常
-		// 一般是因为网络环境不好导致
-		// 比如用中国电信下载国外文件
-
-		// 设置数据大小来去掉多余数据
-		// 并结束这个线程的下载
-		n = int(needSize)
-		err = io.EOF
-	}
-	if err != nil && err != io.EOF {
-		goto ERR
-	}
+	//needSize = chunk.End + 1 - chunk.Begin
+	//if int64(n) > needSize {
+	//	// 数据大小不正常
+	//	// 一般是因为网络环境不好导致
+	//	// 比如用中国电信下载国外文件
+	//
+	//	// 设置数据大小来去掉多余数据
+	//	// 并结束这个线程的下载
+	//	n = int(needSize)
+	//	err = io.EOF
+	//}
+	//if err != nil && err != io.EOF {
+	//	goto ERR
+	//}
+	//buf = buf[:n]
 
 	// 将该分块数据写入数据库
 	err = chunk.Db.Set([]byte(chunk.DataKey), buf)

@@ -2,4 +2,7 @@ tmp
 .idea
 go.sum
 *.DOWNLOADING
-*/download/
+*/download/*
+download/
+urls/blockchair/download/
+*.exe

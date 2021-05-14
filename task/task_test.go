@@ -18,6 +18,8 @@ var (
 	// 20120425 约32MB，用于测试下载器的下载速度
 	url_FileMuchLargerThan4KB = "https://gz.blockchair.com/bitcoin/inputs/blockchair_bitcoin_inputs_20120425.tsv.gz"
 
+	//
+	url_Video_1Mb = "https://sample-videos.com/video123/mp4/720/big_buck_bunny_720p_1mb.mp4"
 )
 
 func TestTask(t *testing.T) {
@@ -45,11 +47,19 @@ func TestTask(t *testing.T) {
 
 func TestTask_CompareWithDownloadDirectly(t *testing.T) {
 	// 选择一个体积较小的文件下载
+
+	//url := url_Video_1Mb
+	//urlFile := DownloadDir + "SampleVideo_1280x720_1mb.mp4"
+
 	url := url_FileLargerThan4KB
+	urlFile := DownloadDir + "Sample_blockchair_bitcoin_inputs_20100404.tsv.gz"
+
 	data1 := download1(url)
-	data2 := download2(url)
+	//data2 := download2(url)
+	data2 := localFile(urlFile)
 	if !bytes.Equal(data1, data2) {
-		t.Logf("data1 != data2, len(data1)=%d, len(data2)=%d\n", len(data1), len(data2))
+		t.Error("data1 != data2")
+		t.Logf("len(data1)=%d, len(data2)=%d\n", len(data1), len(data2))
 	}
 	length := len(data1)
 	// 对data1,data2每16B为一行进行展示
@@ -113,5 +123,29 @@ func download2(url string) []byte {
 	//io.Copy(bytes.NewBuffer(data), rsp.Body)
 	fmt.Println("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
 	rsp.Body.Read(data)
+	return data
+}
+
+func localFile(filepath string) []byte {
+	stat, err := os.Stat(filepath)
+	if err != nil {
+		panic(err)
+	}
+	size := stat.Size()
+
+	data := make([]byte, size)
+	fmt.Println("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+
+	f, err := os.Open(filepath)
+	if err != nil {
+		panic(err)
+	}
+	defer f.Close()
+
+	_, err = f.Read(data)
+	if err != nil {
+		return nil
+	}
+
 	return data
 }
